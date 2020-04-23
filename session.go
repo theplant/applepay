@@ -4,91 +4,102 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"io/ioutil"
 	"net/http"
 	"net/url"
 	"regexp"
+	"sync"
 	"time"
-
-	"github.com/pkg/errors"
 )
 
-type (
-	// sessionRequest is the JSON payload sent to Apple for Apple Pay
-	// session requests
-	sessionRequest struct {
-		MerchantIdentifier string `json:"merchantIdentifier"`
-		DomainName         string `json:"domainName"`
-		DisplayName        string `json:"displayName"`
-	}
-)
+// https://developer.apple.com/documentation/apple_pay_on_the_web/configuring_your_environment
+// https://developer.apple.com/documentation/apple_pay_on_the_web
+type Merchant struct {
+	DefaultPaymentSessionRequest PaymentSessionRequest
 
-var (
-	requestTimeout = 30 * time.Second
-)
+	// tls.LoadX509KeyPair()
+	IdentityCertificate tls.Certificate
+	identityClientOnce  sync.Once
+	identityClient      *http.Client
+}
 
-// Session returns an opaque payload for setting up an Apple Pay session
-func (m Merchant) Session(url string) (sessionPayload []byte, err error) {
-	if m.merchantCertificate == nil {
-		return nil, errors.New("nil merchant certificate")
-	}
-	// Verify that the session URL is Apple's
-	if err := checkSessionURL(url); err != nil {
-		return nil, errors.Wrap(err, "invalid session request URL")
+// https://developer.apple.com/documentation/apple_pay_on_the_web/apple_pay_js_api/requesting_an_apple_pay_payment_session
+type PaymentSessionRequest struct {
+	MerchantIdentifier string `json:"merchantIdentifier"`
+	DisplayName        string `json:"displayName"`
+	Initiative         string `json:"initiative"`
+	InitiativeContext  string `json:"initiativeContext"`
+}
+
+// PaymentSession receives an opaque Apple Pay session object.
+// https://developer.apple.com/documentation/apple_pay_on_the_web/apple_pay_js_api/requesting_an_apple_pay_payment_session
+//
+// validationURL:
+// https://developer.apple.com/documentation/apple_pay_on_the_web/applepaysession/1778021-onvalidatemerchant
+func (m *Merchant) PaymentSession(validationURL string, req PaymentSessionRequest) (session []byte, err error) {
+	if err := checkValidationURL(validationURL); err != nil {
+		return nil, err
 	}
 
-	// Send a session request to Apple
-	cl := m.authenticatedClient()
-	buf := bytes.NewBuffer(nil)
-	json.NewEncoder(buf).Encode(m.sessionRequest())
-	res, err := cl.Post(url, "application/json", buf)
+	if req.MerchantIdentifier == "" {
+		req.MerchantIdentifier = m.DefaultPaymentSessionRequest.MerchantIdentifier
+	}
+	if req.DisplayName == "" {
+		req.DisplayName = m.DefaultPaymentSessionRequest.DisplayName
+	}
+	if req.Initiative == "" {
+		req.Initiative = m.DefaultPaymentSessionRequest.Initiative
+	}
+	if req.InitiativeContext == "" {
+		req.InitiativeContext = m.DefaultPaymentSessionRequest.InitiativeContext
+	}
+
+	cli := m.getIdentityClient()
+	data, err := json.Marshal(req)
 	if err != nil {
-		return nil, errors.Wrap(err, "error making the request")
+		return nil, err
 	}
-
-	// Return directly the result
-	body, _ := ioutil.ReadAll(res.Body)
-	//res.Body.Close()
+	res, err := cli.Post(validationURL, "application/json", bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	body, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		return nil, err
+	}
 	return body, nil
 }
 
-// checkSessionURL validates the request URL sent by the client to check that it
-// belongs to Apple
-func checkSessionURL(location string) error {
-	u, err := url.Parse(location)
+// https://developer.apple.com/documentation/apple_pay_on_the_web/setting_up_your_server
+func checkValidationURL(validationURL string) error {
+	u, err := url.Parse(validationURL)
 	if err != nil {
-		return errors.Wrap(err, "error parsing the URL")
+		return err
 	}
 	hostReg := regexp.MustCompile("^apple-pay-gateway(-.+)?.apple.com$")
 	if !hostReg.MatchString(u.Host) {
-		return errors.New("invalid host")
+		return errors.New("validationURL is not belongs to apple")
 	}
 	if u.Scheme != "https" {
-		return errors.New("unsupported protocol")
+		return errors.New("validationURL scheme is not https")
 	}
 	return nil
 }
 
-// sessionRequest builds a request struct for Apple Pay sessions
-func (m Merchant) sessionRequest() *sessionRequest {
-	return &sessionRequest{
-		MerchantIdentifier: m.identifier,
-		DomainName:         m.domainName,
-		DisplayName:        m.displayName,
-	}
-}
-
-// authenticatedClient returns a HTTP client authenticated with the Merchant
-// Identity certificate signed by Apple
-func (m Merchant) authenticatedClient() *http.Client {
-	return &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				Certificates: []tls.Certificate{
-					*m.merchantCertificate,
+func (m *Merchant) getIdentityClient() *http.Client {
+	m.identityClientOnce.Do(func() {
+		m.identityClient = &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					Certificates: []tls.Certificate{
+						m.IdentityCertificate,
+					},
 				},
 			},
-		},
-		Timeout: requestTimeout,
-	}
+			Timeout: 30 * time.Second,
+		}
+	})
+	return m.identityClient
 }
