@@ -22,6 +22,7 @@ func TestPaymentSession(t *testing.T) {
 	}
 
 	merchant := &Merchant{
+		Sandbox: true,
 		DefaultPaymentSessionRequest: PaymentSessionRequest{
 			MerchantIdentifier: identifier,
 			DisplayName:        defaultDisplayName,
