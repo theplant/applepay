@@ -73,8 +73,13 @@ func (m *Merchant) PaymentSession(validationURL string, req PaymentSessionReques
 	return body, nil
 }
 
+// For production environment:
 var productionValidationURLs = map[string]bool{
-	"apple-pay-gateway.apple.com":               true,
+	// Global
+	"apple-pay-gateway.apple.com": true,
+	// China Region
+	"cn-apple-pay-gateway.apple.com": true,
+	// Additional domain names and IP addresses:
 	"apple-pay-gateway-nc-pod1.apple.com":       true,
 	"apple-pay-gateway-nc-pod2.apple.com":       true,
 	"apple-pay-gateway-nc-pod3.apple.com":       true,
@@ -109,6 +114,7 @@ var productionValidationURLs = map[string]bool{
 	"cn-apple-pay-gateway-tj-pod3-dr.apple.com": true,
 }
 
+// For sandbox testing only:
 var sandboxValidationURLs = map[string]bool{
 	"apple-pay-gateway-cert.apple.com":    true,
 	"cn-apple-pay-gateway-cert.apple.com": true,
